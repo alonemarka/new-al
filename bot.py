@@ -27,7 +27,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
 conn.commit()
 
 # Broadcast state
-broadcast_mode = {}  # user_id: "text", "photo", "video"
+broadcast_mode = {}
 
 def get_user_data(user_id):
     c.execute("SELECT mode, history FROM users WHERE user_id=?", (user_id,))
@@ -49,14 +49,15 @@ def get_all_users():
 
 def get_system_prompt(mode):
     prompts = {
-        "coder": "Sen uzman bir yazılımcısın. Kodları güzelce formatla.",
+        "coder": "Sen uzman bir yazılımcısın. Kodları güzelce formatla, açıklamalı ver.",
         "normal": "Yararlı, eğlenceli ve dostça bir AI'sın.",
-        "sokak": "Sokak çocuğu gibi konuş, argo kullan, kanka diye hitap et."
+        "sokak": "Sokak çocuğu gibi konuş, argo kullan, kanka diye hitap et, samimi ol."
     }
     return prompts.get(mode, prompts["normal"])
 
 async def get_ai_response(prompt, history, mode="normal", image=None):
     messages = [{"role": "system", "content": get_system_prompt(mode)}]
+    
     for h in history:
         messages.append({"role": "user", "content": h.get("user", "")})
         messages.append({"role": "assistant", "content": h.get("assistant", "")})
@@ -72,7 +73,7 @@ async def get_ai_response(prompt, history, mode="normal", image=None):
             model="llama-3.2-11b-vision-preview",
             messages=messages,
             temperature=0.75,
-            max_tokens=1024
+            max_tokens=1200
         )
         return chat.choices[0].message.content
     except Exception as e:
@@ -81,9 +82,15 @@ async def get_ai_response(prompt, history, mode="normal", image=None):
 # ====================== KOMUTLAR ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **Alone AI Bot** aktif!\n\n"
-        "Modlar: /coder | /normal | /sokak\n"
-        "/clear - Hafıza temizle\n"
+        "🤖 **Alone AI Bot** v2 aktif!\n\n"
+        "Komutlar:\n"
+        "/coder - Coder Modu\n"
+        "/normal - Normal Mod\n"
+        "/sokak - Sokak Modu\n"
+        "/clear - Hafızayı temizle\n"
+        "/ses <metin> - Sesli cevap\n"
+        "/stt - Sesli mesajı yazıya çevir\n"
+        "/cevir <metin> - Türkçe'ye çevir\n"
         "/broadcast - Admin duyuru"
     )
 
@@ -98,9 +105,13 @@ async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(user_id, [])
     await update.message.reply_text("🗑️ Hafıza temizlendi!")
 
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Senin ID: `{update.effective_user.id}`", parse_mode=ParseMode.MARKDOWN)
+
+# ====================== BROADCAST ======================
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Bu komut sadece admin'e özel!")
+        await update.message.reply_text("❌ Bu komut admin'e özel!")
         return
     
     keyboard = [
@@ -109,9 +120,8 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎥 Video Duyuru", callback_data="bc_video")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📢 **Broadcast Modu Seç:**", reply_markup=reply_markup)
+    await update.message.reply_text("📢 **Broadcast Türü Seç:**", reply_markup=reply_markup)
 
-# ====================== BROADCAST ======================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -122,58 +132,104 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "bc_text":
         broadcast_mode[user_id] = "text"
-        await query.edit_message_text("📝 Metin duyurusu için mesaj yaz.")
+        await query.edit_message_text("📝 Şimdi metin duyurusunu yaz.")
     elif query.data == "bc_photo":
         broadcast_mode[user_id] = "photo"
-        await query.edit_message_text("🖼 Görsel + caption at.")
+        await query.edit_message_text("🖼 Görsel + opsiyonel caption at.")
     elif query.data == "bc_video":
         broadcast_mode[user_id] = "video"
         await query.edit_message_text("🎥 Video at.")
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID or user_id not in broadcast_mode:
+    if user_id not in broadcast_mode:
         return
 
     mode = broadcast_mode.pop(user_id)
     users = get_all_users()
     success = 0
 
-    if mode == "text":
-        text = update.message.text
-        for uid in users:
-            try:
-                await context.bot.send_message(uid, text)
-                success += 1
-            except:
-                pass
+    try:
+        if mode == "text":
+            text = update.message.text
+            for uid in users:
+                try:
+                    await context.bot.send_message(uid, text, parse_mode=ParseMode.MARKDOWN)
+                    success += 1
+                except:
+                    pass
 
-    elif mode == "photo":
-        photo = update.message.photo[-1]
-        caption = update.message.caption or ""
-        file = await photo.get_file()
-        for uid in users:
-            try:
-                await context.bot.send_photo(uid, photo=file.file_id, caption=caption)
-                success += 1
-            except:
-                pass
+        elif mode == "photo":
+            photo = update.message.photo[-1]
+            caption = update.message.caption or ""
+            file = await photo.get_file()
+            for uid in users:
+                try:
+                    await context.bot.send_photo(uid, photo=file.file_id, caption=caption)
+                    success += 1
+                except:
+                    pass
 
-    elif mode == "video":
-        video = update.message.video
-        caption = update.message.caption or ""
-        for uid in users:
-            try:
-                await context.bot.send_video(uid, video=video.file_id, caption=caption)
-                success += 1
-            except:
-                pass
+        elif mode == "video":
+            video = update.message.video
+            caption = update.message.caption or ""
+            for uid in users:
+                try:
+                    await context.bot.send_video(uid, video=video.file_id, caption=caption)
+                    success += 1
+                except:
+                    pass
+    except:
+        pass
 
-    await update.message.reply_text(f"✅ Broadcast tamamlandı! {success}/{len(users)} kişiye ulaştı.")
+    await update.message.reply_text(f"✅ Broadcast tamamlandı!\n{success}/{len(users)} kişiye gönderildi.")
 
-# ====================== ANA HANDLER ======================
+# ====================== SES VE ÇEVİRİ ======================
+async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Kullanım: `/ses Merhaba kanka`")
+        return
+    text = " ".join(context.args)
+    try:
+        tts = gTTS(text, lang='tr')
+        bio = BytesIO()
+        tts.write_to_fp(bio)
+        bio.seek(0)
+        await update.message.reply_voice(voice=bio, caption="Sesli Cevap")
+    except Exception as e:
+        await update.message.reply_text(f"Ses hatası: {e}")
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice = update.message.voice
+    file = await voice.get_file()
+    audio_bytes = await file.download_as_bytearray()
+    
+    try:
+        transcription = client.audio.transcriptions.create(
+            file=("voice.ogg", audio_bytes),
+            model="whisper-large-v3-turbo",
+            response_format="text"
+        )
+        await update.message.reply_text(f"🎤 **Dinledim:**\n`{transcription}`")
+        
+        # AI cevap
+        user_id = update.effective_user.id
+        mode, _ = get_user_data(user_id)
+        response = await get_ai_response(transcription, [], mode)
+        await update.message.reply_text(response)
+    except Exception as e:
+        await update.message.reply_text(f"STT Hatası: {str(e)}")
+
+async def cevir_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Kullanım: `/cevir Merhaba world`")
+        return
+    text = " ".join(context.args)
+    response = await get_ai_response(f"Bu metni doğal ve akıcı Türkçe'ye çevir: {text}", [], "normal")
+    await update.message.reply_text(response)
+
+# ====================== ANA MESAJ ======================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Broadcast kontrolü
     if update.effective_user.id == ADMIN_ID and update.effective_user.id in broadcast_mode:
         await handle_broadcast(update, context)
         return
@@ -190,15 +246,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == '/sokak': await set_mode(update, context, 'sokak'); return
         if text == '/clear': await clear_memory(update, context); return
         if text == '/broadcast': await broadcast_command(update, context); return
+        if text == '/id': await id_command(update, context); return
 
-    # Normal AI Cevap
     response = await get_ai_response(text, history, mode)
     await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
     
     history.append({"user": text, "assistant": response})
     save_history(user_id, history)
 
-# Fotoğraf (Görsel Analiz + Düzenleme)
+# Fotoğraf İşleyici
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     mode, history_json = get_user_data(user_id)
@@ -208,7 +264,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await photo.get_file()
     image_url = file.file_path
 
-    caption = update.message.caption or "Bu görseli analiz et."
+    caption = update.message.caption or "Bu görseli analiz et ve anlat."
     response = await get_ai_response(caption, history, mode, image=image_url)
     
     await update.message.reply_text(response)
@@ -216,15 +272,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # Komutlar
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_memory))
+    app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("ses", ses_command))
+    app.add_handler(CommandHandler("cevir", cevir_command))
     
+    # Handlerlar
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 Alone AI Bot (Railway + Broadcast) çalışıyor!")
+    print("🚀 Alone AI Bot tamamen hazır!")
     app.run_polling()
 
 if __name__ == "__main__":
