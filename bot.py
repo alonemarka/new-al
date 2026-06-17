@@ -22,7 +22,7 @@ client = Groq(api_key=GROQ_API_KEY)
 # Database
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS users 
+c.execute('''CREATE TABLE IF NOT EXISTS users
              (user_id INTEGER PRIMARY KEY, username TEXT, mode TEXT DEFAULT 'normal', history TEXT)''')
 conn.commit()
 
@@ -60,11 +60,11 @@ async def get_ai_response(prompt, history, mode="normal", image=None):
     for h in history:
         messages.append({"role": "user", "content": h.get("user", "")})
         messages.append({"role": "assistant", "content": h.get("assistant", "")})
-    
+   
     user_content = [{"type": "text", "text": prompt}]
     if image:
         user_content.append({"type": "image_url", "image_url": {"url": image}})
-    
+   
     messages.append({"role": "user", "content": user_content})
 
     try:
@@ -76,7 +76,7 @@ async def get_ai_response(prompt, history, mode="normal", image=None):
         )
         return chat.choices[0].message.content
     except Exception as e:
-        return f"❌ Hata: {str(e)}"
+        return f"❌ Groq Hatası: {str(e)}"
 
 # ====================== KOMUTLAR ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,7 +138,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Bu komut sadece admin'e özel!")
         return
-    
+   
     keyboard = [
         [InlineKeyboardButton("📝 Metin Duyuru", callback_data="bc_text")],
         [InlineKeyboardButton("🖼 Görsel Duyuru", callback_data="bc_photo")],
@@ -153,7 +153,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     if user_id != ADMIN_ID:
         return
-
     if query.data == "bc_text":
         broadcast_mode[user_id] = "text"
         await query.edit_message_text("📝 Metin duyurusunu yaz.")
@@ -168,7 +167,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in broadcast_mode:
         return
-
     mode = broadcast_mode.pop(user_id)
     users = get_all_users()
     success = 0
@@ -203,9 +201,8 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Broadcast tamamlandı! {success}/{len(users)} kişiye gönderildi.")
 
-# ====================== ANA MESAJ (ÖZEL MESAJ ÖNCELİKLİ) ======================
+# ====================== ANA MESAJ ======================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Broadcast kontrolü
     if update.effective_user.id == ADMIN_ID and update.effective_user.id in broadcast_mode:
         await handle_broadcast(update, context)
         return
@@ -227,10 +224,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == '/cevir': await cevir_command(update, context); return
         if text == '/broadcast': await broadcast_command(update, context); return
 
-    # HER ÖZEL MESAJA AI CEVAP
+    # HER MESAJA AI CEVAP
     response = await get_ai_response(text, history, mode)
     await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
-    
+   
     history.append({"user": text, "assistant": response})
     save_history(user_id, history)
 
@@ -250,7 +247,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice = update.message.voice
     file = await voice.get_file()
     audio_bytes = await file.download_as_bytearray()
-    
+   
     try:
         transcription = client.audio.transcriptions.create(
             file=("voice.ogg", audio_bytes),
@@ -258,7 +255,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response_format="text"
         )
         await update.message.reply_text(f"🎤 Dinledim:\n`{transcription}`")
-
+        
         user_id = update.effective_user.id
         mode, _ = get_user_data(user_id)
         response = await get_ai_response(transcription, [], mode)
@@ -268,7 +265,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    
+   
     # Komut Handler'ları
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("coder", lambda u,c: set_mode(u,c,'coder')))
@@ -280,13 +277,13 @@ def main():
     app.add_handler(CommandHandler("stt", stt_command))
     app.add_handler(CommandHandler("cevir", cevir_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
-    
+   
     # Mesaj Handler'ları
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+   
     print("🚀 Alone AI Bot - Özel mesajlarda her mesaja AI cevap verecek şekilde hazır!")
     app.run_polling()
 
