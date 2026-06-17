@@ -9,24 +9,25 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.constants import ParseMode
 
 from groq import Groq
-from gtts import gTTS
+import openai
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+openai.api_key = DEEPSEEK_API_KEY
+openai.base_url = "https://api.deepseek.com/v1"
 
-# Database
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users
              (user_id INTEGER PRIMARY KEY, username TEXT, mode TEXT DEFAULT 'normal', history TEXT)''')
 conn.commit()
 
-# Broadcast state
 broadcast_mode = {}
 
 def get_user_data(user_id):
@@ -51,47 +52,64 @@ def get_system_prompt(mode):
     prompts = {
         "coder": "Sen uzman bir yazılımcısın. Kodları güzelce formatla, açıklamalı ver.",
         "normal": "Yararlı, eğlenceli ve dostça bir AI'sın.",
-        "sokak": "Sokak çocuğu gibi konuş, argo kullan, kanka diye hitap et, samimi ol."
+        "sokak": "Sokak çocuğu gibi konuş, argo kullan, kanka diye hitap et."
     }
     return prompts.get(mode, prompts["normal"])
 
-async def get_ai_response(prompt, history, mode="normal", image=None):
-    messages = [{"role": "system", "content": get_system_prompt(mode)}]
-    for h in history:
-        messages.append({"role": "user", "content": h.get("user", "")})
-        messages.append({"role": "assistant", "content": h.get("assistant", "")})
-   
-    user_content = [{"type": "text", "text": prompt}]
-    if image:
-        user_content.append({"type": "image_url", "image_url": {"url": image}})
-   
-    messages.append({"role": "user", "content": user_content})
-
+async def get_deepseek_response(prompt, history, mode="normal"):
     try:
-        chat = client.chat.completions.create(
+        system = get_system_prompt(mode)
+        messages = [{"role": "system", "content": system}]
+        for h in history[-15:]:
+            messages.append({"role": "user", "content": h.get("user", "")})
+            messages.append({"role": "assistant", "content": h.get("assistant", "")})
+        messages.append({"role": "user", "content": prompt})
+
+        response = openai.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1200
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ alone chat api Hatası: {str(e)}"
+
+async def get_groq_vision_response(prompt, image_url, history, mode="normal"):
+    if not groq_client:
+        return "Groq API Key eksik."
+    try:
+        messages = [{"role": "system", "content": get_system_prompt(mode)}]
+        for h in history[-10:]:
+            messages.append({"role": "user", "content": h.get("user", "")})
+            messages.append({"role": "assistant", "content": h.get("assistant", "")})
+        
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ]
+        })
+
+        chat = groq_client.chat.completions.create(
             model="llama-3.2-11b-vision-preview",
             messages=messages,
-            temperature=0.75,
-            max_tokens=1200
+            temperature=0.7,
+            max_tokens=1000
         )
         return chat.choices[0].message.content
     except Exception as e:
-        return f"❌ Groq Hatası: {str(e)}"
+        return f"❌ alone api Hatası: {str(e)[:150]}"
 
 # ====================== KOMUTLAR ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **Alone AI Bot** aktif!\n\n"
-        "Özel mesajlarda **her mesaja** AI ile cevap veriyorum.\n\n"
+        "🤖 **Alone AI Bot** aktif!\n"
+        "Sohbet → DeepSeek\n"
+        "Görsel → Groq Vision\n\n"
         "Komutlar:\n"
-        "/coder - Coder Modu\n"
-        "/normal - Normal Mod\n"
-        "/sokak - Sokak Modu\n"
-        "/clear - Hafızayı temizle\n"
-        "/ses <metin> - Sesli cevap\n"
-        "/stt - Sesli mesajı yazıya çevir\n"
-        "/cevir <metin> - Türkçe'ye çevir\n"
-        "/broadcast - Admin duyuru (sadece admin)"
+        "/coder /normal /sokak /clear /ses /stt /cevir"
     )
 
 async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
@@ -105,12 +123,9 @@ async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(user_id, [])
     await update.message.reply_text("🗑️ Hafıza temizlendi!")
 
-async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Senin ID: `{update.effective_user.id}`", parse_mode=ParseMode.MARKDOWN)
-
 async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Kullanım: `/ses Merhaba kanka`")
+        await update.message.reply_text("Kullanım: `/ses Merhaba`")
         return
     text = " ".join(context.args)
     try:
@@ -118,95 +133,30 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bio = BytesIO()
         tts.write_to_fp(bio)
         bio.seek(0)
-        await update.message.reply_voice(voice=bio, caption="Sesli Cevap")
+        await update.message.reply_voice(voice=bio)
     except Exception as e:
         await update.message.reply_text(f"Ses hatası: {e}")
 
 async def stt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎤 Sesli mesaj at, hemen yazıya çevireyim.")
+    await update.message.reply_text("Sesli mesaj at.")
 
 async def cevir_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Kullanım: `/cevir Hello world`")
+        await update.message.reply_text("Kullanım: `/cevir metin`")
         return
     text = " ".join(context.args)
-    response = await get_ai_response(f"Bu metni doğal ve akıcı Türkçe'ye çevir: {text}", [], "normal")
-    await update.message.reply_text(response)
+    resp = await get_deepseek_response(f"Bu metni Türkçe'ye çevir: {text}", [], "normal")
+    await update.message.reply_text(resp)
 
-# ====================== BROADCAST ======================
+# Broadcast basit
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Bu komut sadece admin'e özel!")
+        await update.message.reply_text("Admin değilsin.")
         return
-   
-    keyboard = [
-        [InlineKeyboardButton("📝 Metin Duyuru", callback_data="bc_text")],
-        [InlineKeyboardButton("🖼 Görsel Duyuru", callback_data="bc_photo")],
-        [InlineKeyboardButton("🎥 Video Duyuru", callback_data="bc_video")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📢 Broadcast türü seç:", reply_markup=reply_markup)
+    await update.message.reply_text("Broadcast hazır.")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    if user_id != ADMIN_ID:
-        return
-    if query.data == "bc_text":
-        broadcast_mode[user_id] = "text"
-        await query.edit_message_text("📝 Metin duyurusunu yaz.")
-    elif query.data == "bc_photo":
-        broadcast_mode[user_id] = "photo"
-        await query.edit_message_text("🖼 Görsel + caption at.")
-    elif query.data == "bc_video":
-        broadcast_mode[user_id] = "video"
-        await query.edit_message_text("🎥 Video at.")
-
-async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in broadcast_mode:
-        return
-    mode = broadcast_mode.pop(user_id)
-    users = get_all_users()
-    success = 0
-
-    if mode == "text" and update.message.text:
-        text = update.message.text
-        for uid in users:
-            try:
-                await context.bot.send_message(uid, text)
-                success += 1
-            except:
-                pass
-    elif mode == "photo" and update.message.photo:
-        photo = update.message.photo[-1]
-        caption = update.message.caption or ""
-        file = await photo.get_file()
-        for uid in users:
-            try:
-                await context.bot.send_photo(uid, photo=file.file_id, caption=caption)
-                success += 1
-            except:
-                pass
-    elif mode == "video" and update.message.video:
-        video = update.message.video
-        caption = update.message.caption or ""
-        for uid in users:
-            try:
-                await context.bot.send_video(uid, video=video.file_id, caption=caption)
-                success += 1
-            except:
-                pass
-
-    await update.message.reply_text(f"✅ Broadcast tamamlandı! {success}/{len(users)} kişiye gönderildi.")
-
-# ====================== ANA MESAJ ======================
+# ====================== MESAJ HANDLER ======================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID and update.effective_user.id in broadcast_mode:
-        await handle_broadcast(update, context)
-        return
-
     user_id = update.effective_user.id
     mode, history_json = get_user_data(user_id)
     history = json.loads(history_json)
@@ -218,16 +168,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == '/normal': await set_mode(update, context, 'normal'); return
         if text == '/sokak': await set_mode(update, context, 'sokak'); return
         if text == '/clear': await clear_memory(update, context); return
-        if text == '/id': await id_command(update, context); return
-        if text == '/ses': await ses_command(update, context); return
         if text == '/stt': await stt_command(update, context); return
         if text == '/cevir': await cevir_command(update, context); return
-        if text == '/broadcast': await broadcast_command(update, context); return
 
-    # HER MESAJA AI CEVAP
-    response = await get_ai_response(text, history, mode)
-    await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
-   
+    response = await get_deepseek_response(text, history, mode)
+    await update.message.reply_text(response)
+    
     history.append({"user": text, "assistant": response})
     save_history(user_id, history)
 
@@ -238,53 +184,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
-    caption = update.message.caption or "Bu görseli analiz et ve cevap ver."
+    caption = update.message.caption or "Bu görseli detaylı analiz et ve anlat."
 
-    response = await get_ai_response(caption, history, mode, image=file.file_path)
+    response = await get_groq_vision_response(caption, file.file_path, history, mode)
     await update.message.reply_text(response)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice = update.message.voice
     file = await voice.get_file()
     audio_bytes = await file.download_as_bytearray()
-   
     try:
-        transcription = client.audio.transcriptions.create(
+        transcription = groq_client.audio.transcriptions.create(
             file=("voice.ogg", audio_bytes),
             model="whisper-large-v3-turbo",
             response_format="text"
         )
-        await update.message.reply_text(f"🎤 Dinledim:\n`{transcription}`")
-        
-        user_id = update.effective_user.id
-        mode, _ = get_user_data(user_id)
-        response = await get_ai_response(transcription, [], mode)
+        await update.message.reply_text(f"🎤 Dinledim: {transcription}")
+        response = await get_deepseek_response(transcription, [], "normal")
         await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"STT Hatası: {str(e)}")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-   
-    # Komut Handler'ları
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("coder", lambda u,c: set_mode(u,c,'coder')))
     app.add_handler(CommandHandler("normal", lambda u,c: set_mode(u,c,'normal')))
     app.add_handler(CommandHandler("sokak", lambda u,c: set_mode(u,c,'sokak')))
     app.add_handler(CommandHandler("clear", clear_memory))
-    app.add_handler(CommandHandler("id", id_command))
-    app.add_handler(CommandHandler("ses", ses_command))
     app.add_handler(CommandHandler("stt", stt_command))
     app.add_handler(CommandHandler("cevir", cevir_command))
-    app.add_handler(CommandHandler("broadcast", broadcast_command))
-   
-    # Mesaj Handler'ları
-    app.add_handler(CallbackQueryHandler(button_handler))
+    
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-   
-    print("🚀 Alone AI Bot - Özel mesajlarda her mesaja AI cevap verecek şekilde hazır!")
+    
+    print("🚀 Bot (DeepSeek + Groq Vision) hazır!")
     app.run_polling()
 
 if __name__ == "__main__":
